@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.db
+.env
+
+# OS/Editor
+.DS_Store
+.vscode/
+.idea/
+
+# Git
+.git
+.gitignore
+
+# Node/Frontend stuff (if frontend is in same repo)
+node_modules/
+dist/
+build/
+*.log
+.next/
