@@ -1,29 +1,40 @@
 FROM python:3.11-slim
 
-# Prevents Python from writing .pyc files and buffering stdout
-ENV PYTHONDONTWRITEBYTECODE 1
-ENV PYTHONUNBUFFERED 1
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PORT=8000
 
 # Set working directory
 WORKDIR /app
 
-# Install build tools
+# Install system dependencies
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends build-essential && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
+    apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install dependencies
+# Install Python dependencies
 COPY requirements.txt .
-#COPY .env .env
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy your app code
+# Copy application code
 COPY . .
 
-# Expose FastAPI's port
-EXPOSE 8000
+# Create directory for module info
+RUN mkdir -p /app/data && \
+    if [ -f module_info.json ]; then cp module_info.json /app/data/; fi
 
-# Run the app using Gunicorn with Uvicorn workers
-CMD ["gunicorn", "-w", "4", "-k", "uvicorn.workers.UvicornWorker", "ai-chatbot:app", "--bind", "0.0.0.0:8000"]
+# Health check
+HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:$PORT/health || exit 1
+
+# Expose the port
+EXPOSE $PORT
+
+# Run the application
+CMD ["gunicorn", "-w", "4", "-k", "uvicorn.workers.UvicornWorker", "ai-chatbot:app", "--bind", "0.0.0.0:8000", "--timeout", "120"]

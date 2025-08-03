@@ -1,23 +1,74 @@
 # Python
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
 *.pyd
+*.pyo
+*.egg-info/
+*.egg
+.pytest_cache/
+.mypy_cache/
 *.db
+*.sqlite3
+
+# Environment and secrets
 .env
+.env.*
+*.env
+secrets/
+credentials/
+config.local.*
+
+# Build and package
+dist/
+build/
+*.whl
+*.tar.gz
 
 # OS/Editor
 .DS_Store
-.vscode/
+Thumbs.db
+*.swp
+*.swo
+*~
 .idea/
+.vscode/
+*.code-workspace
 
 # Git
-.git
+.git/
 .gitignore
+.gitmodules
+.gitattributes
 
-# Node/Frontend stuff (if frontend is in same repo)
-node_modules/
-dist/
-build/
+# Logs and temp files
 *.log
+logs/
+temp/
+tmp/
+
+# Documentation
+docs/_build/
+*.rst
+*.md
+
+# Frontend assets (if applicable)
+node_modules/
 .next/
+out/
+.nuxt/
+.cache/
+public/static/
+*.css.map
+*.js.map
+
+# Special cases
+docker-compose*.yml
+Dockerfile*
+docker-compose*
+.dockerignore
+*.dockerfile
+
+# Local development files
+local_settings.py
+settings/local.py
+*.local.*

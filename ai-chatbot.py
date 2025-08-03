@@ -6,10 +6,13 @@ from typing import Dict, List
 from uuid import uuid4
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request, requests
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+import requests
 
+# Load environment variables
+load_dotenv()
 
 # Configuration validation
 def validate_config() -> Dict[str, str]:
@@ -23,7 +26,7 @@ def validate_config() -> Dict[str, str]:
     return config
 
 class ChatSession:
-    def __init__(self, max_messages: int = 50):
+    def __init__(self, max_messages: int = 20):
         self.messages: List[Dict[str, str]] = []
         self.max_messages = max_messages
         self.last_access = datetime.now()
@@ -35,11 +38,11 @@ class ChatSession:
         self.last_access = datetime.now()
 
 class SessionManager:
-    def __init__(self, max_sessions: int = 1000):
+    def __init__(self, max_sessions: int = 500):
         self.sessions: Dict[str, ChatSession] = {}
         self.max_sessions = max_sessions
 
-    def cleanup_old_sessions(self, max_age_hours: int = 24) -> None:
+    def cleanup_old_sessions(self, max_age_hours: int = 12) -> None:
         current_time = datetime.now()
         sessions_to_remove = [
             sid for sid, session in self.sessions.items()
@@ -49,17 +52,16 @@ class SessionManager:
             del self.sessions[sid]
 
     def get_or_create_session(self, session_id: str) -> ChatSession:
+        self.cleanup_old_sessions()
         if session_id not in self.sessions:
             if len(self.sessions) >= self.max_sessions:
-                self.cleanup_old_sessions()
+                raise HTTPException(status_code=429, detail="Too many active sessions")
             self.sessions[session_id] = ChatSession()
         return self.sessions[session_id]
 
-load_dotenv()
-
 app = FastAPI()
 
-# Allow CORS for frontend
+# Allow CORS for the frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -71,101 +73,210 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Session memory store
-chat_sessions = {}
+# Initialize session manager
+session_manager = SessionManager()
 
-# API keys
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-SEARCH_API_KEY = os.getenv("SEARCH_API_KEY")
-SEARCH_ENGINE_ID = os.getenv("SEARCH_ENGINE_ID")
+# Validate config
+try:
+    config = validate_config()
+    GEMINI_API_KEY = config["GEMINI_API_KEY"]
+    SEARCH_API_KEY = config["SEARCH_API_KEY"]
+    SEARCH_ENGINE_ID = config["SEARCH_ENGINE_ID"]
+except ValueError as e:
+    raise RuntimeError(f"Configuration error: {str(e)}")
+
+# Load Maynooth University knowledge base
+MAYNOOTH_KNOWLEDGE = ""
+try:
+    json_path = Path("module_info.json")
+    if json_path.exists():
+        with json_path.open() as f:
+            maynooth_data = json.load(f)
+            MAYNOOTH_KNOWLEDGE = "\n".join(
+                f"Module {mod['code']}: {mod['name']} - {mod['description']}"
+                for mod in maynooth_data.values()
+            )
+except Exception as e:
+    print(f"Warning: Could not load Maynooth knowledge base: {str(e)}")
 
 class Question(BaseModel):
     query: str
 
-@app.post("/ask")
-async def ask_question(q: Question, request: Request):
-    # Step 1: Search Google
-    context = ""
+def should_perform_search(response_text: str, query: str) -> bool:
+    """Determine if we should perform a web search based on the response and query."""
+    uncertainty_phrases = [
+        "don't know", "not sure", "couldn't find", "no information",
+        "need to look", "don't have", "unable to answer", "can't find",
+        "doesn't appear", "not available in my knowledge"
+    ]
+
+    current_event_terms = [
+        "current", "recent", "this year", str(datetime.now().year),
+        "now", "latest", "upcoming", "newest"
+    ]
+
+    fact_based_terms = [
+        "statistics", "numbers", "data", "research",
+        "study", "survey", "percentage", "how many"
+    ]
+
+    location_terms = [
+        "where is", "location of", "find the", "directions to",
+        "map of", "how to get to"
+    ]
+
+    # Check if the response indicates uncertainty
+    if any(phrase.lower() in response_text.lower() for phrase in uncertainty_phrases):
+        return True
+
+    # Check a query for terms that likely need fresh information
+    query_lower = query.lower()
+    if (any(term in query_lower for term in current_event_terms) or \
+            (any(term in query_lower for term in fact_based_terms)) or \
+            (any(term in query_lower for term in location_terms))):
+         return True
+
+    return False
+
+def perform_google_search(query: str) -> str:
+    """Perform a Google search restricted to Maynooth University domain."""
     try:
         search_url = "https://www.googleapis.com/customsearch/v1"
         params = {
             "key": SEARCH_API_KEY,
             "cx": SEARCH_ENGINE_ID,
-            "q": q.query,
+            "q": f"{query} site:maynoothuniversity.ie",
             "num": 3
         }
         search_res = requests.get(search_url, params=params)
         search_res.raise_for_status()
         search_data = search_res.json()
 
-        if search_data.get("items"):
-            snippets = [item.get("snippet", "") for item in search_data["items"][:3]]
-            context = "\n\n".join(snippets)
-        else:
-            context = "No Google results found."
+        if not search_data.get("items"):
+            return "No relevant results found on Maynooth University website."
+
+        results = []
+        for item in search_data["items"][:3]:
+            results.append(
+                f"Title: {item.get('title', 'No title')}\n"
+                f"URL: {item.get('link', 'No URL')}\n"
+                f"Content: {item.get('snippet', 'No snippet available')}\n"
+            )
+        return "\n\n".join(results)
     except Exception as e:
-        context = "Google Search failed."
+        print(f"Search failed: {str(e)}")
+        return "Unable to perform search at this time."
 
-    # Step 2: Load JSON knowledge (optional)
-    json_snippet = ""
-    json_path = Path("module_info.json")
-    if json_path.exists():
-        try:
-            with json_path.open() as f:
-                maynooth_data = json.load(f)
-                json_snippet = json.dumps(maynooth_data, indent=2)
-        except Exception:
-            json_snippet = "Module data could not be loaded."
-    else:
-        json_snippet = "No structured module data available."
-
-    # Step 3: Manage chat memory
-    session_id = request.headers.get("X-Session-ID") or str(uuid4())
-    if session_id not in chat_sessions:
-        chat_sessions[session_id] = []
-    history = chat_sessions[session_id]
-    history.append({"role": "user", "text": q.query})
-
-    # Step 4: Construct the prompt
-    prompt = (
-        f"User asked: {q.query}\n\n"
-        f"Here are some relevant search results:\n{context}\n\n"
-        f"Here is structured data from Maynooth University:\n{json_snippet}\n\n"
-        "Now, using the information above and your own reasoning ability, "
-        "give a helpful, clear answer as if you're explaining to a 15-year-old.\n"
-        "If something is not directly stated, try to infer it from the context.\n"
-        "You are a friendly, smart AI assistant that likes to help students.\n"
-        "Have normal conversations to the best of your ability even if the question isn't about computer science — "
-        "but try to relate it to tech or learning if possible.\n"
-        "Here's the chat so far:\n\n"
-    )
-
-    for msg in history:
-        who = "User" if msg["role"] == "user" else "Assistant"
-        prompt += f"{who}: {msg['text']}\n"
-
-    prompt += "\nAssistant:"
-
-    # Step 5: Call Gemini
-    gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-    headers = {"Content-Type": "application/json"}
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "temperature": 0.9,
-            "topK": 50,
-            "topP": 0.95
-        }
-    }
-
+def call_gemini(prompt: str) -> str:
+    """Call Gemini API with proper error handling."""
     try:
-        gemini_res = requests.post(gemini_url, headers=headers, json=payload)
-        gemini_res.raise_for_status()
-        gemini_data = gemini_res.json()
-        reply = gemini_data["candidates"][0]["content"]["parts"][0]["text"]
-    except Exception as e:
-        reply = "I'm here to help, but I couldn't generate a full response right now. Try asking in a simpler way!"
+        gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={GEMINI_API_KEY}"
+        headers = {"Content-Type": "application/json"}
+        payload = {
+            "contents": [{
+                "parts": [{"text": prompt}],
+                "role": "user"
+            }],
+            "generationConfig": {
+                "temperature": 0.7,
+                "topK": 40,
+                "topP": 0.9,
+                "maxOutputTokens": 1024
+            },
+            "safetySettings": [
+                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_ONLY_HIGH"},
+                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_ONLY_HIGH"},
+                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_ONLY_HIGH"},
+                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_ONLY_HIGH"}
+            ]
+        }
 
-    # Save reply to memory
-    history.append({"role": "assistant", "text": reply})
-    return {"answer": reply, "session_id": session_id}
+        response = requests.post(gemini_url, headers=headers, json=payload)
+        response.raise_for_status()
+        response_data = response.json()
+
+        if "candidates" not in response_data or not response_data["candidates"]:
+            raise ValueError("No candidates in response")
+
+        return response_data["candidates"][0]["content"]["parts"][0]["text"]
+    except Exception as e:
+        print(f"Gemini API error: {str(e)}")
+        raise
+
+@app.post("/ask")
+async def ask_question(q: Question, request: Request):
+    """The main endpoint for handling user questions with autonomous search decision-making."""
+    global sources_used
+    try:
+        # Get or create a session
+        session_id = request.headers.get("X-Session-ID") or str(uuid4())
+        session = session_manager.get_or_create_session(session_id)
+
+        # Add a user message to the history
+        session.add_message("user", q.query)
+
+        # Build initial prompt with Maynooth context
+        initial_prompt = f"""You are MU Bot, the official AI assistant for Maynooth University.
+Your knowledge includes:
+1. General information about Maynooth University
+2. Academic programs and modules
+3. Campus facilities and services
+4. Student life information
+5. General knowledge about Ireland and education
+
+Current Maynooth University module information:
+{MAYNOOTH_KNOWLEDGE if MAYNOOTH_KNOWLEDGE else "No module data available"}
+
+Conversation history:
+"""
+        # Add conversation history (last 3 exchanges)
+        for msg in session.messages[-6:]:
+            role = "User" if msg["role"] == "user" else "Assistant"
+            initial_prompt += f"{role}: {msg['text']}\n"
+
+        initial_prompt += f"\nAssistant: Please respond to this query about '{q.query}' " \
+                          "focusing on Maynooth University context where appropriate. " \
+                          "If you're unsure or need current information, indicate that."
+
+        # Get initial response
+        try:
+            initial_response = call_gemini(initial_prompt)
+
+            # Determine if we need to search
+            needs_search = should_perform_search(initial_response, q.query)
+            sources_used = ["bot_knowledge"]
+
+            if needs_search:
+                search_results = perform_google_search(q.query)
+                enhanced_prompt = f"""{initial_prompt}
+                
+Additional Context from Maynooth University website:
+{search_results}
+
+Please revise your response incorporating this new information where relevant:"""
+                final_response = call_gemini(enhanced_prompt)
+                sources_used.append("web_search")
+            else:
+                final_response = initial_response
+
+        except Exception as e:
+            print(f"Response generation error: {str(e)}")
+            final_response = "I'm having trouble generating a complete response right now. Please try again later."
+
+        # Save assistant's reply to session
+        session.add_message("assistant", final_response)
+
+        return {
+            "answer": final_response,
+            "session_id": session_id,
+            "sources_used": sources_used
+        }
+
+    except Exception as e:
+        print(f"Error in ask endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.get("/health")
+async def health_check():
+    """Simple health check endpoint."""
+    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
