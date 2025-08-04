@@ -6,9 +6,13 @@ pydantic==2.6.4
 python-dotenv==1.0.1
 requests==2.31.0
 
-# Security & performance
+# FastAPI dependencies (compatible versions)
 anyio==4.3.0
+starlette==0.36.3  # Changed to be compatible with fastapi 0.109.2
 httpx==0.27.0
 python-multipart==0.0.19
-starlette==0.47.2
+sentence-transformers
+torch
 
+# Optional analytics (uncomment if needed)
+# google-api-python-client==2.121.0

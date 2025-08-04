@@ -25,10 +25,6 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Copy application code
 COPY . .
 
-# Create directory for module info
-RUN mkdir -p /app/data && \
-    if [ -f module_info.json ]; then cp module_info.json /app/data/; fi
-
 # Health check
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:$PORT/health || exit 1

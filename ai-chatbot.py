@@ -11,6 +11,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import requests
 
+# New imports for semantic fallback
+from sentence_transformers import SentenceTransformer, util
+import torch
+
 # Load environment variables
 load_dotenv()
 
@@ -87,23 +91,52 @@ except ValueError as e:
 
 # Load Maynooth University knowledge base
 MAYNOOTH_KNOWLEDGE = ""
+MODULE_DATA = []
 try:
-    json_path = Path("module_info.json")
+    json_path = Path("/app/data/module_info.json")  # Use an absolute container path
     if json_path.exists():
         with json_path.open() as f:
-            maynooth_data = json.load(f)
+            MODULE_DATA = list(json.load(f).values())
             MAYNOOTH_KNOWLEDGE = "\n".join(
-                f"Module {mod['code']}: {mod['name']} - {mod['description']}"
-                for mod in maynooth_data.values()
+                f"Module {mod['scrapedModuleCodeFromPage']}: {mod['title']}\n"
+                f"Credits: {mod['credits']}\n"
+                f"Overview: {mod['overview']}\n"
+                f"Learning Outcomes: {', '.join(mod['learningOutcomes'])}\n"
+                for mod in MODULE_DATA
             )
 except Exception as e:
     print(f"Warning: Could not load Maynooth knowledge base: {str(e)}")
+    MAYNOOTH_KNOWLEDGE = "No module data available"
+
+# Initialize sentence-transformers model & embeddings for fallback
+print("Loading sentence-transformers model for fallback...")
+model = SentenceTransformer("all-MiniLM-L6-v2")
+module_texts = []
+if MODULE_DATA:
+    module_texts = [
+        f"{mod['scrapedModuleCodeFromPage']}: {mod['title']}. Overview: {mod['overview']}. Learning Outcomes: {', '.join(mod['learningOutcomes'])}"
+        for mod in MODULE_DATA
+    ]
+    module_embeddings = model.encode(module_texts, convert_to_tensor=True)
+else:
+    module_embeddings = None
+
+def semantic_fallback_answer(user_query: str) -> str:
+    if not module_embeddings:
+        return "Sorry, I couldn’t find any relevant module information."
+    query_emb = model.encode(user_query, convert_to_tensor=True)
+    cos_scores = util.pytorch_cos_sim(query_emb, module_embeddings)[0]
+    top_idx = int(torch.argmax(cos_scores))
+    score = cos_scores[top_idx].item()
+    if score < 0.4:  # threshold for similarity; adjust if needed
+        return "Sorry, I couldn’t find any relevant module information."
+    return module_texts[top_idx]
 
 class Question(BaseModel):
     query: str
 
 def should_perform_search(response_text: str, query: str) -> bool:
-    """Determine if we should perform a web search based on the response and query."""
+    # ... same as before (unchanged) ...
     uncertainty_phrases = [
         "don't know", "not sure", "couldn't find", "no information",
         "need to look", "don't have", "unable to answer", "can't find",
@@ -134,12 +167,12 @@ def should_perform_search(response_text: str, query: str) -> bool:
     if (any(term in query_lower for term in current_event_terms) or \
             (any(term in query_lower for term in fact_based_terms)) or \
             (any(term in query_lower for term in location_terms))):
-         return True
+        return True
 
     return False
 
 def perform_google_search(query: str) -> str:
-    """Perform a Google search restricted to Maynooth University domain."""
+    # ... same as before (unchanged) ...
     try:
         search_url = "https://www.googleapis.com/customsearch/v1"
         params = {
@@ -168,7 +201,7 @@ def perform_google_search(query: str) -> str:
         return "Unable to perform search at this time."
 
 def call_gemini(prompt: str) -> str:
-    """Call Gemini API with proper error handling."""
+    # ... same as before (unchanged) ...
     try:
         gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={GEMINI_API_KEY}"
         headers = {"Content-Type": "application/json"}
@@ -205,17 +238,13 @@ def call_gemini(prompt: str) -> str:
 
 @app.post("/ask")
 async def ask_question(q: Question, request: Request):
-    """The main endpoint for handling user questions with autonomous search decision-making."""
-    global sources_used
+    sources_used = ["bot_knowledge"]
     try:
-        # Get or create a session
         session_id = request.headers.get("X-Session-ID") or str(uuid4())
         session = session_manager.get_or_create_session(session_id)
 
-        # Add a user message to the history
         session.add_message("user", q.query)
 
-        # Build initial prompt with Maynooth context
         initial_prompt = f"""You are MU Bot, the official AI assistant for Maynooth University.
 Your knowledge includes:
 1. General information about Maynooth University
@@ -229,7 +258,6 @@ Current Maynooth University module information:
 
 Conversation history:
 """
-        # Add conversation history (last 3 exchanges)
         for msg in session.messages[-6:]:
             role = "User" if msg["role"] == "user" else "Assistant"
             initial_prompt += f"{role}: {msg['text']}\n"
@@ -238,11 +266,9 @@ Conversation history:
                           "focusing on Maynooth University context where appropriate. " \
                           "If you're unsure or need current information, indicate that."
 
-        # Get initial response
         try:
             initial_response = call_gemini(initial_prompt)
 
-            # Determine if we need to search
             needs_search = should_perform_search(initial_response, q.query)
             sources_used = ["bot_knowledge"]
 
@@ -261,9 +287,9 @@ Please revise your response incorporating this new information where relevant:""
 
         except Exception as e:
             print(f"Response generation error: {str(e)}")
-            final_response = "I'm having trouble generating a complete response right now. Please try again later."
+            # New fallback: use semantic fallback answer instead of generic message
+            final_response = semantic_fallback_answer(q.query)
 
-        # Save assistant's reply to session
         session.add_message("assistant", final_response)
 
         return {
@@ -274,9 +300,12 @@ Please revise your response incorporating this new information where relevant:""
 
     except Exception as e:
         print(f"Error in ask endpoint: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        return {
+            "answer": f"Error: {str(e)}",
+            "session_id": session_id if 'session_id' in locals() else str(uuid4()),
+            "sources_used": ["error"]
+        }
 
 @app.get("/health")
 async def health_check():
-    """Simple health check endpoint."""
     return {"status": "healthy", "timestamp": datetime.now().isoformat()}
