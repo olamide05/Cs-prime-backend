@@ -64,7 +64,9 @@ class SessionManager:
         return self.sessions[session_id]
 
 app = FastAPI()
-
+@app.get("/")
+def read_root():
+    return {"status": "ok"}
 # Allow CORS for the frontend
 app.add_middleware(
     CORSMiddleware,
