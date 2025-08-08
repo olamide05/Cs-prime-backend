@@ -1,74 +1,26 @@
-# Python
+# Bytecode / cache
 __pycache__/
-*.py[cod]
-*.pyd
+*.pyc
 *.pyo
-*.egg-info/
-*.egg
-.pytest_cache/
-.mypy_cache/
-*.db
-*.sqlite3
+*.pyd
+*.log
 
-# Environment and secrets
+# Virtual environments
 .env
-.env.*
-*.env
-secrets/
-credentials/
-config.local.*
+.venv/
+env/
+venv/
 
-# Build and package
-dist/
-build/
-*.whl
-*.tar.gz
+# Git and CI/CD
+.git
+.gitignore
+.github/
 
-# OS/Editor
+# OS-specific files
 .DS_Store
 Thumbs.db
-*.swp
-*.swo
-*~
-.idea/
-.vscode/
-*.code-workspace
 
-# Git
-.git/
-.gitignore
-.gitmodules
-.gitattributes
-
-# Logs and temp files
-*.log
-logs/
-temp/
-tmp/
-
-# Documentation
-docs/_build/
-*.rst
-*.md
-
-# Frontend assets (if applicable)
-node_modules/
-.next/
-out/
-.nuxt/
-.cache/
-public/static/
-*.css.map
-*.js.map
-
-# Special cases
-docker-compose*.yml
-Dockerfile*
-docker-compose*
-.dockerignore
-*.dockerfile
-
-# Local development files
-local_settings.py
-settings/local.py
-*.local.*
+# Local development data
+data/*.json
+tests/
+*.sqlite3
