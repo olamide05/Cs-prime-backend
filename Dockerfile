@@ -1,55 +1,52 @@
-# 1 build stage
-FROM python:3.11-slim-bullseye AS builder
-
-# Environment vars for faster Python startup
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+# Stage 1: Builder
+FROM python:3.11-slim as builder
 
 WORKDIR /app
-
-# Install build dependencies (only in this stage)
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends build-essential curl && \
-    rm -rf /var/lib/apt/lists/*
-
-# Copy dependency list
 COPY requirements.txt .
 
-# Install Python dependencies
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+# Install system dependencies only needed for building
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends gcc python3-dev && \
+    rm -rf /var/lib/apt/lists/*
 
+# Create virtual environment
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
 
-# 2. Production Stage
+# Install dependencies
+RUN pip install --no-cache-dir -r requirements.txt
 
-FROM python:3.11-slim-bullseye
-
-# Environment configuration
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PORT=8000
+# Stage 2: Runtime
+FROM python:3.11-slim
 
 WORKDIR /app
 
-# Create non-root user
-RUN useradd -m appuser
+# Copy virtual environment
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
 
-# Copy installed Python packages from builder
-COPY --from=builder /usr/local /usr/local
-
-# Copy application code
+# Copy application
 COPY . .
 
-# Switch to non-root
+# Runtime configuration
+ENV PYTHONUNBUFFERED=1 \
+    PORT=8000 \
+    GUNICORN_WORKERS=4
+
+# Non-root user
+RUN useradd -m appuser && chown -R appuser:appuser /app
 USER appuser
 
-# Health check endpoint for container orchestration
-HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:$PORT/health || exit 1
+# Health check
+HEALTHCHECK --interval=30s --timeout=30s CMD python -c "import requests; requests.get('http://localhost:$PORT/health', timeout=5)"
 
-# Expose FastAPI port
 EXPOSE $PORT
 
-# Start Gunicorn with Uvicorn workers
-CMD ["gunicorn", "-w", "4", "-k", "uvicorn.workers.UvicornWorker", "ai-chatbot:app", "--bind", "0.0.0.0:8000", "--timeout", "120", "--graceful-timeout", "30"]
+# Start command
+CMD ["gunicorn", "ai-chatbot:app", \
+    "--bind", "0.0.0.0:8000", \
+    "--workers", "${GUNICORN_WORKERS}", \
+    "--worker-class", "uvicorn.workers.UvicornWorker", \
+    "--timeout", "120"]
+
+ENTRYPOINT ["sh", "-c", "gunicorn ai-chatbot:app --bind 0.0.0.0:8000 --workers ${GUNICORN_WORKERS:-4} --worker-class uvicorn.workers.UvicornWorker --timeout 120"]

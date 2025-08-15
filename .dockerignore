@@ -1,26 +1,10 @@
-# Bytecode / cache
-__pycache__/
+__pycache__
 *.pyc
 *.pyo
 *.pyd
-*.log
-
-# Virtual environments
 .env
-.venv/
-env/
-venv/
-
-# Git and CI/CD
+*.env
+Dockerfile
+README.md
 .git
 .gitignore
-.github/
-
-# OS-specific files
-.DS_Store
-Thumbs.db
-
-# Local development data
-data/*.json
-tests/
-*.sqlite3
