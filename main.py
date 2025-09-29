@@ -4,203 +4,188 @@ from typing import Dict, List
 from uuid import uuid4
 import logging
 
-from dotenv import load_dotenv
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import httpx # For async HTTP requests
+import httpx  # For Google Search
+from google import genai  # Gemini API client
 
-# --- Logging Configuration ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+# --- Logging setup ---
+# This helps us keep track of what's happening in the app, and any errors that pop up.
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Load Environment Variables
-# load_dotenv("keys.env")  # Uncomment if using a .env file locally
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-SEARCH_API_KEY = os.environ.get("SEARCH_API_KEY")  # ✅ fixed
-SEARCH_ENGINE_ID = os.environ.get("SEARCH_ENGINE_ID")  # ✅ fixed
+# --- Load environment variables ---
+GENAI_API_KEY = os.environ.get("GENAI_API_KEY")
+SEARCH_API_KEY = os.environ.get("SEARCH_API_KEY")
+SEARCH_ENGINE_ID = os.environ.get("SEARCH_ENGINE_ID")
 
-# Configuration 
-API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key={GEMINI_API_KEY}"  # ✅ fixed endpoint
-TIMEOUT = 30  # seconds for Gemini API calls
-SEARCH_TIMEOUT = 10
-SEARCH_RESULTS_COUNT = 3
+# Make sure we have our main API key set, otherwise stop the app.
+if not GENAI_API_KEY:
+    raise RuntimeError("GENAI_API_KEY environment variable is missing!")
 
-# FastAPI App Setup 
+# --- Gemini client setup ---
+# This is the official Google client for Gemini. We'll use the 'gemini-2.0-flash' model.
+client = genai.Client(api_key=GENAI_API_KEY)
+MODEL_NAME = "gemini-2.0-flash"
+
+# --- FastAPI setup ---
+# Create the app and configure CORS so browsers can connect to it.
 app = FastAPI(
-    title="Maynooth University CS Chatbot",
-    description="An AI assistant focused on the Computer Science department at Maynooth University, powered by Gemini 1.5 Pro with search capabilities.",
+    title="Maynooth CS Chatbot",
+    description="A friendly AI assistant for Maynooth University CS Department using Gemini 2.0 Flash.",
     version="1.0.0"
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Adjust in production
+    allow_origins=["*"],  # In production, you might want to restrict this.
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-#  Chat Session Management 
+# --- Chat session management ---
+# We keep track of ongoing chats so the AI remembers the conversation.
 class ChatSession:
     def __init__(self, session_id: str):
         self.session_id = session_id
         self.messages: List[Dict[str, str]] = []
 
     def add_message(self, role: str, content: str):
+        # Add a message to the chat history and keep only the last 10 messages to save memory.
         self.messages.append({
             "role": role,
             "content": content,
             "timestamp": datetime.now().isoformat()
         })
-        self.messages = self.messages[-10:]  # Keep last 10 messages
+        self.messages = self.messages[-10:]
 
     def get_history(self) -> str:
+        # Format the chat history nicely so we can feed it into the AI.
         return "\n".join(f"{m['role']}: {m['content']}" for m in self.messages)
 
+# Store active sessions in memory.
 sessions: Dict[str, ChatSession] = {}
 
-# Gemini API Interaction 
-async def call_gemini(prompt: str) -> str:
-    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-        try:
-            response = await client.post(
-                API_URL,
-                json={
-                    "contents": [{
-                        "parts": [{"text": prompt}],
-                        "role": "user"
-                    }],
-                    "generationConfig": {
-                        "temperature": 0.7,
-                        "maxOutputTokens": 2000
-                    }
-                }
-            )
-            response.raise_for_status()
-            data = response.json()
-
-            if "candidates" in data and data["candidates"] and \
-               "content" in data["candidates"][0] and \
-               "parts" in data["candidates"][0]["content"] and \
-               data["candidates"][0]["content"]["parts"]:
-                return data["candidates"][0]["content"]["parts"][0]["text"]
-
-            logger.error(f"Gemini API response missing expected structure: {data}")
-            raise ValueError("Invalid Gemini API response format")
-
-        except httpx.RequestError as e:
-            logger.error(f"Gemini API network error: {e}", exc_info=True)
-            raise HTTPException(status_code=500, detail="Could not connect to Gemini API.")
-        except httpx.HTTPStatusError as e:
-            logger.error(f"Gemini API HTTP error {e.response.status_code}: {e.response.text}", exc_info=True)
-            raise HTTPException(status_code=e.response.status_code, detail=f"Gemini API error: {e.response.text}")
-        except Exception as e:
-            logger.error(f"Unexpected Gemini error: {e}", exc_info=True)
-            raise HTTPException(status_code=500, detail="Unexpected Gemini API error.")
-
-# --- Google Custom Search ---
+# --- Google Search helper ---
+# If the AI thinks a search is needed, we'll use Google Custom Search to fetch results.
 async def search_google(query: str) -> List[Dict[str, str]]:
     if not SEARCH_API_KEY or not SEARCH_ENGINE_ID:
-        logger.warning("SEARCH_API_KEY or SEARCH_ENGINE_ID not set. Skipping search.")
         return []
 
-    search_url = "https://www.googleapis.com/customsearch/v1"
+    url = "https://www.googleapis.com/customsearch/v1"
     params = {
         "key": SEARCH_API_KEY,
         "cx": SEARCH_ENGINE_ID,
         "q": query,
-        "num": SEARCH_RESULTS_COUNT
+        "num": 3
     }
-    async with httpx.AsyncClient(timeout=SEARCH_TIMEOUT) as client:
+
+    async with httpx.AsyncClient(timeout=10) as client:
         try:
-            response = await client.get(search_url, params=params)
-            response.raise_for_status()
-            data = response.json()
-            return [
-                {"title": item.get("title"), "link": item.get("link"), "snippet": item.get("snippet")}
-                for item in data.get("items", [])
-            ]
+            resp = await client.get(url, params=params)
+            resp.raise_for_status()
+            items = resp.json().get("items", [])
+            # Return only the essentials: title, link, snippet.
+            return [{"title": i.get("title"), "link": i.get("link"), "snippet": i.get("snippet")} for i in items]
         except Exception as e:
-            logger.error(f"Google Search API error for query '{query}': {e}", exc_info=True)
+            logger.error(f"Search error: {e}")
             return []
 
-# --- Pydantic Model ---
+# --- Request model ---
+# This defines what a user sends when asking a question.
 class Question(BaseModel):
     query: str
 
-# --- API Endpoints ---
+# --- Gemini API call helper ---
+# Sends a prompt to Gemini and gets a response.
+async def call_gemini(prompt: str) -> str:
+    try:
+        response = client.generate(
+            model=MODEL_NAME,
+            prompt=prompt,
+            temperature=0.7,
+            max_output_tokens=2000
+        )
+        return response.text
+    except Exception as e:
+        logger.error(f"Gemini API error: {e}")
+        raise HTTPException(status_code=500, detail=f"Gemini API error: {e}")
+
+# --- /ask endpoint ---
+# Users send their questions here. We'll decide if a search is needed and return an answer.
 @app.post("/ask")
 async def ask_question(q: Question, request: Request):
     session_id = request.headers.get("X-Session-ID") or str(uuid4())
-
+    
+    # Create a new session if this is the first message
     if session_id not in sessions:
         sessions[session_id] = ChatSession(session_id)
-    session = sessions[session_id]
+        logger.info(f"Created new session: {session_id}")
 
+    session = sessions[session_id]
     session.add_message("user", q.query)
 
-    try:
-        initial_prompt = f"""You are an AI assistant for Maynooth University CS dept.
-If the question is within scope, answer it. 
-If external info is needed, respond ONLY with:
-TOOL_CODE:SEARCH: <query>"""
+    # Prepare the prompt for Gemini
+    initial_prompt = f"""
+You are a friendly AI assistant for the Maynooth University CS department.
 
-        gemini_initial_response = await call_gemini(initial_prompt)
-        final_response_text = ""
+Conversation history:
+{session.get_history()}
 
-        if gemini_initial_response.strip().startswith("TOOL_CODE:SEARCH:"):
-            search_query = gemini_initial_response.replace("TOOL_CODE:SEARCH:", "").strip()
-            search_results = await search_google(search_query)
+User: {q.query}
+Assistant:"""
 
-            if search_results:
-                search_context = "\n\n".join([
-                    f"Title: {r['title']}\nLink: {r['link']}\nSnippet: {r['snippet']}"
-                    for r in search_results
-                ])
-                follow_up_prompt = f"""Use the following results to answer:
+    gemini_response = await call_gemini(initial_prompt)
+
+    # Check if Gemini wants us to do a search
+    if gemini_response.strip().startswith("TOOL_CODE:SEARCH:"):
+        search_query = gemini_response.replace("TOOL_CODE:SEARCH:", "").strip()
+        search_results = await search_google(search_query)
+        
+        if search_results:
+            search_context = "\n\n".join(
+                f"Title: {r['title']}\nLink: {r['link']}\nSnippet: {r['snippet']}" 
+                for r in search_results
+            )
+            follow_up_prompt = f"""
+You are a friendly AI assistant for the Maynooth CS department.
+
+Use the following search results to answer the user's question:
 {search_context}
 
-User question: {q.query}
-Answer:"""
-                final_response_text = await call_gemini(follow_up_prompt)
-            else:
-                final_response_text = "I couldn't find relevant info for your query."
+Conversation history:
+{session.get_history()}
+
+User's question: {q.query}
+Assistant:"""
+            final_response = await call_gemini(follow_up_prompt)
         else:
-            final_response_text = gemini_initial_response
+            final_response = "Sorry, I couldn't find relevant information via search."
+    else:
+        final_response = gemini_response
 
-        session.add_message("assistant", final_response_text)
+    session.add_message("assistant", final_response)
 
-        return {
-            "answer": final_response_text,
-            "session_id": session_id,
-            "timestamp": datetime.now().isoformat()
-        }
+    return {
+        "answer": final_response,
+        "session_id": session_id,
+        "timestamp": datetime.now().isoformat()
+    }
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception(f"Error in /ask: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error.")
-
-@app.get("/status")
-async def get_status():
-    try:
-        test_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={GEMINI_API_KEY}"
-        async with httpx.AsyncClient(timeout=10) as client:
-            response = await client.get(test_url)
-
-        status_text = "operational" if response.status_code == 200 else "degraded"
-        return {"status": status_text, "timestamp": datetime.now().isoformat()}
-    except Exception as e:
-        return {"status": "error", "detail": str(e), "timestamp": datetime.now().isoformat()}
-
+# --- Health & Status endpoints ---
 @app.get("/health")
 async def health_check():
+    # Simple endpoint to make sure the app is running
     return {"status": "healthy"}
 
-# --- Entry Point ---
-if __name__ == "__main__":
-    import uvicorn
-    port = int(os.environ.get("PORT", 8000))  # ✅ dynamic port for Render
-    uvicorn.run(app, host="0.0.0.0", port=port)
+@app.get("/status")
+async def status_check():
+    # Check Gemini models and report status
+    try:
+        models = [m["name"] for m in client.models.list()]
+        return {"status": "operational", "models": models, "timestamp": datetime.now().isoformat()}
+    except Exception as e:
+        logger.error(f"Status check failed: {e}")
+        return {"status": "error", "detail": str(e), "timestamp": datetime.now().isoformat()}
