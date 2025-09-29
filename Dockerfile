@@ -34,7 +34,7 @@ ENV WEB_CONCURRENCY=3
 # Adjust --workers based on WEB_CONCURRENCY or a fixed number.
 # `main:app` refers to the `app` object in `main.py`.
 # `--bind 0.0.0.0:8000` makes the server accessible from outside the container.
-CMD ["gunicorn", "main:app", "--workers", "3", "--worker-class", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000", "--timeout", "120"]
+#CMD ["gunicorn", "main:app", "--workers", "3", "--worker-class", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000", "--timeout", "120"]
 
 # Alternatively, for a simpler setup (less robust for production, but fine for development):
-# CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
