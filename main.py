@@ -18,8 +18,9 @@ logger = logging.getLogger(__name__)
 # Ensure you have a 'keys.env' file in the same directory with your API keys.
 # load_dotenv("keys.env")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-SEARCH_API_KEY = os.environ("SEARCH_API_KEY") #  for search functionality
-SEARCH_ENGINE_ID = os.environ("SEARCH_ENGINE_ID") #  for search functionality
+SEARCH_API_KEY = os.environ.get("SEARCH_API_KEY")
+SEARCH_ENGINE_ID = os.environ.get("SEARCH_ENGINE_ID")   
+
 
 # --- Configuration ---
 API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro-latest:generateContent?key={GEMINI_API_KEY}"
