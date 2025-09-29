@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 # --- Load Environment Variables ---
 # Ensure you have a 'keys.env' file in the same directory with your API keys.
 # load_dotenv("keys.env")
-GEMINI_API_KEY = os.environ("GEMINI_API_KEY")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SEARCH_API_KEY = os.environ("SEARCH_API_KEY") #  for search functionality
 SEARCH_ENGINE_ID = os.environ("SEARCH_ENGINE_ID") #  for search functionality
 
@@ -57,7 +57,7 @@ class ChatSession:
         })
         # Keep last 5 messages to manage context window and memory.
         # This is a heuristic; a token-based approach would be more precise.
-        self.messages = self.messages[-5:]
+        self.messages = self.messages[-10:]
         logger.debug(f"Session {self.session_id}: Added message from {role}. Current history length: {len(self.messages)}")
 
     def get_history(self) -> str:
